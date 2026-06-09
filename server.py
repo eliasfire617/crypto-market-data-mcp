@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from typing import Any, Awaitable, Callable
@@ -65,8 +66,16 @@ RETRYABLE_ERRORS = (
 # Auth is enforced on the hosted HTTP transport (where you charge); local stdio
 # stays open for single-user dev. Detected here so it can be attached at build time.
 HTTP_MODE = "--http" in sys.argv
+
+# When deployed behind a gateway that already authenticates AND rate-limits
+# subscribers (e.g. MCPize), set CRYPTO_MCP_DISABLE_AUTH=1. This server then
+# trusts the gateway and skips its own auth + rate limiting — avoiding double
+# authentication and double throttling. The container must only be reachable
+# through that gateway.
+TRUST_GATEWAY = HTTP_MODE and os.environ.get("CRYPTO_MCP_DISABLE_AUTH", "").strip().lower() in ("1", "true", "yes")
+
 _auth = None
-if HTTP_MODE:
+if HTTP_MODE and not TRUST_GATEWAY:
     from auth import APIKeyVerifier
 
     _auth = APIKeyVerifier()
@@ -519,13 +528,16 @@ async def get_liquidations(symbol: str, exchange: str = "gate", limit: int = 20)
 
 
 def main() -> None:
-    """Entry point. HTTP mode enables auth + rate limiting; stdio stays open."""
+    """Entry point. HTTP mode enables auth + rate limiting unless a trusted
+    gateway is configured (CRYPTO_MCP_DISABLE_AUTH); stdio stays open."""
     if HTTP_MODE:
-        import os
+        if TRUST_GATEWAY:
+            log.info("CRYPTO_MCP_DISABLE_AUTH set — trusting upstream gateway; "
+                     "this server's auth and rate limiting are disabled.")
+        else:
+            from ratelimit import RateLimitMiddleware
 
-        from ratelimit import RateLimitMiddleware
-
-        mcp.add_middleware(RateLimitMiddleware())
+            mcp.add_middleware(RateLimitMiddleware())
         mcp.run(transport="http", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
     else:
         mcp.run()

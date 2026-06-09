@@ -96,6 +96,14 @@ export CRYPTO_MCP_API_KEYS_FILE=./api_keys.json
 If no keys are set in HTTP mode, a throwaway **demo key (tier=pro)** is generated
 and printed to stderr so you can test immediately.
 
+### Behind a gateway (e.g. MCPize)
+
+If you deploy behind a platform that already authenticates **and** rate-limits
+subscribers, set `CRYPTO_MCP_DISABLE_AUTH=1`. The server then trusts the gateway
+and skips its own auth + rate limiting — no double authentication, no double
+throttling. Only do this when the container is reachable solely through that
+gateway.
+
 ### Use with Claude Desktop
 
 Copy `claude_desktop_config.example.json` into your Claude Desktop config
