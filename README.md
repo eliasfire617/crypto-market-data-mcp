@@ -1,4 +1,5 @@
 # Crypto Market Data MCP Server
+[![MCPize](https://mcpize.com/badge/@eliasfire617/crypto-market-data)](https://mcpize.com/mcp/crypto-market-data)
 
 A **read-only** [Model Context Protocol](https://modelcontextprotocol.io) server that
 gives any AI agent (Claude, Cursor, Cline, Windsurf…) live cryptocurrency market data
@@ -7,6 +8,16 @@ everything uses public endpoints.
 
 Supported exchanges: **bybit, binance, okx, hyperliquid, gate, kucoin** (add more
 CCXT ids in `SUPPORTED_EXCHANGES`).
+
+## Connect via MCPize
+
+Use this MCP server instantly with no local installation:
+
+```bash
+npx -y mcpize connect @eliasfire617/crypto-market-data --client claude
+```
+
+Or connect at: **https://mcpize.com/mcp/crypto-market-data**
 
 ## Tools (13)
 
