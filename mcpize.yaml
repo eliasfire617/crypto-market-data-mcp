@@ -1,0 +1,28 @@
+# MCPize Configuration
+# Docs: https://mcpize.com/docs/mcpize-yaml
+
+version: 1
+
+name: "Crypto Market Data"
+slug: "crypto-market-data"
+
+runtime: container
+entry: "server.py"
+
+build:
+  install: "pip install -r requirements.txt"
+  dockerfile: "Dockerfile"
+
+start:
+  type: http
+  command: "python"
+  args:
+    - "server.py"
+    - "--http"
+
+bridge:
+  mode: http
+
+credentials:
+  - name: "CRYPTO_MCP_API_KEYS"
+    description: "API keys for HTTP mode authentication"
