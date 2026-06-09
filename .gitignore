@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+api_keys.json
+dist/
+build/
+*.egg-info/
+
+# operator-only notes — keep local, never publish
+PUBLISHING.md

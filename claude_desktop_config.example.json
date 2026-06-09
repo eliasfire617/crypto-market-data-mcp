@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "crypto-market-data": {
+      "command": "/root/crypto-mcp/.venv/bin/python",
+      "args": ["/root/crypto-mcp/server.py"]
+    }
+  }
+}

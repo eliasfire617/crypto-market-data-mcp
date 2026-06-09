@@ -1,0 +1,4 @@
+{
+  "sk_live_REPLACE_WITH_A_RANDOM_SECRET": { "client_id": "acme-corp", "tier": "pro" },
+  "sk_live_ANOTHER_RANDOM_SECRET": { "client_id": "jane-doe", "tier": "free" }
+}

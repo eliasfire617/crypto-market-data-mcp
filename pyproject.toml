@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crypto-market-data-mcp"
+version = "0.1.0"
+description = "Read-only crypto market data MCP server (price, funding rates, open interest, long/short, order book, candles) across major exchanges via CCXT."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Rehobot Labs" }]
+keywords = ["mcp", "model-context-protocol", "crypto", "trading", "ccxt", "funding-rate", "ai-agents"]
+dependencies = [
+    "fastmcp>=3.4",
+    "ccxt>=4.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/eliasfire617/crypto-market-data-mcp"
+Repository = "https://github.com/eliasfire617/crypto-market-data-mcp"
+
+[project.scripts]
+crypto-market-data-mcp = "server:main"
+
+[tool.setuptools]
+py-modules = ["server", "auth", "ratelimit"]

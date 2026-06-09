@@ -1,0 +1,24 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.eliasfire617/crypto-market-data",
+  "description": "Read-only live crypto market data (price, funding rates, open interest, long/short ratio, order book, candles, trades) across major exchanges via CCXT. Includes compare_funding for funding-rate arbitrage.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/eliasfire617/crypto-market-data-mcp",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://REPLACE_WITH_YOUR_MCPIZE_URL/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer <your-api-key>",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
