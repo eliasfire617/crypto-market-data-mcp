@@ -1,2 +1,2 @@
 fastmcp>=3.4
-ccxt>=4.5
+ccxt>=4.5.57

@@ -63,6 +63,33 @@ RETRYABLE_ERRORS = (
     ccxt.ExchangeNotAvailable,
 )
 
+# Funding interval fallback (hours) when the exchange doesn't report one.
+# Needed to annualize rates: venues fund at different cadences, so raw
+# per-interval rates are NOT comparable across exchanges.
+FUNDING_INTERVAL_H: dict[str, float] = {
+    "binance": 8, "bybit": 8, "okx": 8, "gate": 8, "kucoin": 8,
+    "hyperliquid": 1,
+}
+
+# Cap concurrent in-flight requests per exchange: each tool call builds its own
+# ccxt instance, so ccxt's rate limiter can't see across calls — without this a
+# burst of agent calls can hammer one venue and trigger IP bans.
+MAX_CONCURRENT_PER_EXCHANGE = 8
+_semaphores: dict[str, asyncio.Semaphore] = {}
+
+
+def _sem(eid: str) -> asyncio.Semaphore:
+    sem = _semaphores.get(eid)
+    if sem is None:
+        sem = _semaphores[eid] = asyncio.Semaphore(MAX_CONCURRENT_PER_EXCHANGE)
+    return sem
+
+
+# Markets dictionaries are large and ccxt re-downloads them implicitly on every
+# fresh instance; share them across calls so only the first call per venue pays.
+MARKETS_TTL_S = 6 * 3600
+_markets: dict[str, tuple[float, dict]] = {}
+
 # Auth is enforced on the hosted HTTP transport (where you charge); local stdio
 # stays open for single-user dev. Detected here so it can be attached at build time.
 HTTP_MODE = "--http" in sys.argv
@@ -152,6 +179,47 @@ def _make_exchange(eid: str):
     return getattr(ccxt, eid)({"enableRateLimit": True, "timeout": REQUEST_TIMEOUT_MS})
 
 
+def _funding_interval_hours(eid: str, rate_record: dict | None = None) -> float:
+    """Funding interval in hours: exchange-reported if present, else table."""
+    if rate_record:
+        iv = rate_record.get("interval")
+        if isinstance(iv, str) and iv.endswith("h"):
+            try:
+                return float(iv[:-1])
+            except ValueError:
+                pass
+    return FUNDING_INTERVAL_H.get(eid, 8)
+
+
+def _funding_apr_pct(rate: float, interval_h: float) -> float:
+    """Annualize a per-interval funding rate into APR %."""
+    return rate * (24.0 / interval_h) * 365.0 * 100.0
+
+
+_KNOWN_QUOTES = ("USDT", "USDC", "USD")
+
+
+def _norm_market(symbol: str) -> str:
+    """Accept the formats agents actually send: 'btc', 'BTCUSDT', 'BTC-USDT'
+    all become 'BTC/USDT'. Strings with '/' or ':' pass through (upcased)."""
+    s = (symbol or "").strip().upper().replace("-", "/")
+    if not s or "/" in s or ":" in s:
+        return s
+    for q in _KNOWN_QUOTES:
+        if s.endswith(q) and len(s) > len(q):
+            return f"{s[:-len(q)]}/{q}"
+    return f"{s}/USDT"
+
+
+def _norm_perp(symbol: str) -> str:
+    """Like _norm_market but lands on perp form: 'btc' -> 'BTC/USDT:USDT'."""
+    s = _norm_market(symbol)
+    if ":" in s or "/" not in s:
+        return s
+    quote = s.split("/", 1)[1]
+    return f"{s}:{quote}" if quote in _KNOWN_QUOTES else s
+
+
 # --------------------------------------------------------------------------- #
 # Core executor: validation + capability guard + retries + timeout + cleanup
 # --------------------------------------------------------------------------- #
@@ -186,9 +254,21 @@ async def _execute(
                 supported=_supporting(requires),
             )
 
+        mk = _markets.get(eid)
+        if mk and (time.monotonic() - mk[0]) < MARKETS_TTL_S:
+            try:
+                ex.set_markets(mk[1])
+            except Exception:  # noqa: BLE001 - cache is best-effort
+                pass
+
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                result = await asyncio.wait_for(fn(ex), timeout=OVERALL_TIMEOUT_S)
+                async with _sem(eid):
+                    result = await asyncio.wait_for(fn(ex), timeout=OVERALL_TIMEOUT_S)
+                fresh = ex.markets if isinstance(getattr(ex, "markets", None), dict) else None
+                if fresh and (eid not in _markets
+                              or (time.monotonic() - _markets[eid][0]) >= MARKETS_TTL_S):
+                    _markets[eid] = (time.monotonic(), fresh)
                 # fn may itself return a structured error (e.g. a guard) — don't cache those
                 if cache_key and not (isinstance(result, dict) and "error" in result):
                     _cache_set(cache_key, result, cache_ttl)
@@ -287,6 +367,8 @@ async def get_price(symbol: str, exchange: str = "bybit") -> dict:
         symbol: 'BTC/USDT' (spot) or 'BTC/USDT:USDT' (perp).
         exchange: Exchange id (default 'bybit').
     """
+    symbol = _norm_market(symbol)
+
     async def fn(ex):
         t = await ex.fetch_ticker(symbol)
         return {
@@ -309,6 +391,7 @@ async def get_order_book(symbol: str, exchange: str = "bybit", depth: int = 5) -
         exchange: Exchange id (default 'bybit').
         depth: Levels per side (default 5, max 50).
     """
+    symbol = _norm_market(symbol)
     d = max(1, min(depth, 50))
 
     async def fn(ex):
@@ -331,6 +414,7 @@ async def get_ohlcv(symbol: str, exchange: str = "bybit", timeframe: str = "1h",
         timeframe: '1m','5m','15m','1h','4h','1d', etc.
         limit: Number of candles (default 24, max 200).
     """
+    symbol = _norm_market(symbol)
     n = max(1, min(limit, 200))
 
     async def fn(ex):
@@ -353,6 +437,7 @@ async def get_recent_trades(symbol: str, exchange: str = "bybit", limit: int = 2
         exchange: Exchange id (default 'bybit').
         limit: Number of trades (default 20, max 100).
     """
+    symbol = _norm_market(symbol)
     n = max(1, min(limit, 100))
 
     async def fn(ex):
@@ -377,10 +462,16 @@ async def get_funding_rate(symbol: str, exchange: str = "bybit") -> dict:
         symbol: Perp symbol, e.g. 'BTC/USDT:USDT'.
         exchange: Exchange id (default 'bybit').
     """
+    symbol = _norm_perp(symbol)
+
     async def fn(ex):
         fr = await ex.fetch_funding_rate(symbol)
+        rate = fr.get("fundingRate")
+        ih = _funding_interval_hours(exchange, fr)
         return {"exchange": exchange, "symbol": symbol,
-                "funding_rate": fr.get("fundingRate"),
+                "funding_rate": rate,
+                "funding_interval_hours": ih,
+                "apr_pct": _funding_apr_pct(rate, ih) if rate is not None else None,
                 "funding_timestamp": fr.get("fundingDatetime"),
                 "next_funding_rate": fr.get("nextFundingRate"),
                 "mark_price": fr.get("markPrice"), "index_price": fr.get("indexPrice")}
@@ -398,6 +489,7 @@ async def get_funding_rate_history(symbol: str, exchange: str = "bybit", limit: 
         exchange: Exchange id (default 'bybit').
         limit: Number of records (default 10, max 100).
     """
+    symbol = _norm_perp(symbol)
     n = max(1, min(limit, 100))
 
     async def fn(ex):
@@ -415,37 +507,48 @@ async def get_funding_rate_history(symbol: str, exchange: str = "bybit", limit: 
 async def compare_funding(symbol: str = "BTC/USDT:USDT", exchanges: list[str] | None = None) -> dict:
     """Compare funding rates for one perp symbol across exchanges (concurrent).
 
-    Surfaces funding-rate arbitrage: the venue paying the most vs the least,
-    and the spread between them.
+    Surfaces funding-rate arbitrage: the venue paying the most vs the least.
+    Rates are annualized (apr_pct) before comparing — venues fund at different
+    cadences (e.g. Hyperliquid hourly vs 8h elsewhere), so raw per-interval
+    rates are not directly comparable.
 
     Args:
         symbol: Perp symbol, e.g. 'BTC/USDT:USDT'.
         exchanges: List of exchange ids. Defaults to all supported.
     """
+    symbol = _norm_perp(symbol)
     targets = exchanges or SUPPORTED_EXCHANGES
 
     async def fetch_one(eid: str) -> dict:
         async def fn(ex):
             fr = await ex.fetch_funding_rate(symbol)
-            return {"exchange": eid, "funding_rate": fr.get("fundingRate")}
+            rate = fr.get("fundingRate")
+            ih = _funding_interval_hours(eid, fr)
+            return {"exchange": eid, "funding_rate": rate,
+                    "funding_interval_hours": ih,
+                    "apr_pct": _funding_apr_pct(rate, ih) if rate is not None else None}
 
         res = await _execute(eid, fn, requires="fetchFundingRate",
-                             cache_key=f"fr:{eid}:{symbol}", cache_ttl=10)
+                             cache_key=f"cfr:{eid}:{symbol}", cache_ttl=10)
         if "error" in res:
             return {"exchange": eid, "error": res["error"]["message"]}
         return res
 
     results = await asyncio.gather(*[fetch_one(e) for e in targets])
 
-    valid = [r for r in results if r.get("funding_rate") is not None]
+    valid = [r for r in results if r.get("apr_pct") is not None]
     arb_spread = None
     if len(valid) >= 2:
-        hi = max(valid, key=lambda r: r["funding_rate"])
-        lo = min(valid, key=lambda r: r["funding_rate"])
+        hi = max(valid, key=lambda r: r["apr_pct"])
+        lo = min(valid, key=lambda r: r["apr_pct"])
         arb_spread = {
-            "max": {"exchange": hi["exchange"], "rate": hi["funding_rate"]},
-            "min": {"exchange": lo["exchange"], "rate": lo["funding_rate"]},
-            "spread": hi["funding_rate"] - lo["funding_rate"],
+            "max": {"exchange": hi["exchange"], "apr_pct": hi["apr_pct"],
+                    "rate_per_interval": hi["funding_rate"]},
+            "min": {"exchange": lo["exchange"], "apr_pct": lo["apr_pct"],
+                    "rate_per_interval": lo["funding_rate"]},
+            "spread_apr_pct": hi["apr_pct"] - lo["apr_pct"],
+            "note": "Compared on annualized basis; intervals may be exchange defaults "
+                    "when not reported. Gross of fees and slippage.",
         }
 
     return {"symbol": symbol, "rates": results, "arb_spread": arb_spread}
@@ -459,6 +562,8 @@ async def get_open_interest(symbol: str, exchange: str = "bybit") -> dict:
         symbol: Perp symbol, e.g. 'BTC/USDT:USDT'.
         exchange: Exchange id (default 'bybit'). Note: 'gate' does not support this.
     """
+    symbol = _norm_perp(symbol)
+
     async def fn(ex):
         oi = await ex.fetch_open_interest(symbol)
         return {"exchange": exchange, "symbol": symbol,
@@ -486,6 +591,7 @@ async def get_long_short_ratio(
         return _err("not_supported",
                     "long/short ratio is available on 'binance' only in this server.",
                     supported=["binance"])
+    symbol = _norm_perp(symbol).split(":")[0].replace("/", "")  # -> 'BTCUSDT'
     n = max(1, min(limit, 500))
 
     async def fn(ex):
@@ -514,6 +620,7 @@ async def get_liquidations(symbol: str, exchange: str = "gate", limit: int = 20)
         exchange: Exchange id (default 'gate'). Support is limited — see get_capabilities.
         limit: Number of records (default 20, max 100).
     """
+    symbol = _norm_perp(symbol)
     n = max(1, min(limit, 100))
 
     async def fn(ex):

@@ -48,6 +48,14 @@ Or connect at: **https://mcpize.com/mcp/crypto-market-data**
 
 `compare_funding` is the differentiator: it surfaces funding-rate arbitrage
 opportunities (which venue pays the most vs least) in one concurrent call.
+Rates are **annualized (`apr_pct`) before comparing** — venues fund at different
+cadences (Hyperliquid hourly vs 8h elsewhere), so raw rates aren't comparable.
+
+> **Want the analysis, not just the data?** The companion server
+> [**Crypto Derivatives Intelligence**](https://mcpize.com/mcp/crypto-derivs-intelligence)
+> builds on this data: funding-carry opportunities netted of fees (breakeven days,
+> executable depth), OI-price divergence, liquidation zones, positioning extremes,
+> and market-regime classification — one tool call each.
 
 ## Robustness
 
@@ -125,6 +133,8 @@ Copy `claude_desktop_config.example.json` into your Claude Desktop config
 
 - Spot: `BTC/USDT`
 - Perpetual: `BTC/USDT:USDT`
+- Common shorthand is normalized automatically: `btc`, `BTCUSDT`, `BTC-USDT`
+  all work (funding/OI tools land on the perp form).
 
 ---
 
@@ -133,7 +143,3 @@ Copy `claude_desktop_config.example.json` into your Claude Desktop config
 - Add more exchanges to `SUPPORTED_EXCHANGES`.
 - More aggressive caching of hot symbols to cut latency.
 - Optional websocket streaming for live order book / trades.
-
----
-
-*Maintainers: hosting, deployment and registry-listing notes live in [PUBLISHING.md](PUBLISHING.md).*
