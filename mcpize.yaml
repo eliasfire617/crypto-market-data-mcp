@@ -13,7 +13,7 @@ build:
   install: "pip install -r requirements.txt"
   dockerfile: "Dockerfile"
 
-start:
+startCommand:
   type: http
   command: "python"
   args:
